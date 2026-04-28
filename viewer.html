@@ -426,10 +426,17 @@
     peer = new Peer({
       config: {
         iceServers: [
+          // 多組備援 STUN（任一成功即可）
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'turn:openrelay.metered.ca:80',  username: 'openrelayproject', credential: 'openrelayproject' },
-          { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+          { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:stun3.l.google.com:19302' },
+          { urls: 'stun:stun.cloudflare.com:3478' },
+          // TURN fallback：UDP + TCP（TCP 可穿透封鎖 UDP 的防火牆）
+          { urls: 'turn:openrelay.metered.ca:80',                username: 'openrelayproject', credential: 'openrelayproject' },
+          { urls: 'turn:openrelay.metered.ca:443',               username: 'openrelayproject', credential: 'openrelayproject' },
+          { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+          { urls: 'turn:openrelay.metered.ca:80?transport=tcp',  username: 'openrelayproject', credential: 'openrelayproject' },
         ]
       }
     });
@@ -441,10 +448,14 @@
 
       call.on('stream', (remoteStream) => {
         remoteVideo.srcObject = remoteStream;
-        remoteVideo.play().catch(() => {});
-        videoOverlay.classList.add('hidden');
         setStatus('connected', '已連線');
         startStatsPolling(call.peerConnection);
+        remoteVideo.play()
+          .then(() => { videoOverlay.classList.add('hidden'); })
+          .catch(() => {
+            // 行動瀏覽器 autoplay 被封鎖，等待使用者手勢
+            overlayText.textContent = '點擊畫面開始播放';
+          });
       });
 
       call.on('close', () => {
@@ -500,6 +511,14 @@
   }
 
   // ── 事件綁定 ──
+  videoOverlay.addEventListener('click', () => {
+    if (remoteVideo.srcObject) {
+      remoteVideo.play()
+        .then(() => { videoOverlay.classList.add('hidden'); })
+        .catch(() => {});
+    }
+  });
+
   connectBtn.addEventListener('click', () => {
     startConnect(peerInput.value.trim());
   });
