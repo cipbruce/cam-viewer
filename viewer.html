@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>USB Camera Viewer</title>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --border: #334155;
+      --text: #e2e8f0;
+      --text-muted: #94a3b8;
+      --primary: #22c55e;
+      --danger: #ef4444;
+      --yellow: #eab308;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+
+    header h1 {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    #status-chip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    #status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--border);
+      transition: background 0.3s;
+    }
+
+    #status-dot.connecting { background: var(--yellow); }
+    #status-dot.connected  { background: var(--primary); }
+    #status-dot.error      { background: var(--danger); }
+
+    /* ── 主內容 ── */
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      gap: 16px;
+    }
+
+    /* ── 輸入表單 ── */
+    #connect-form {
+      width: 100%;
+      max-width: 420px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    #connect-form h2 {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-muted);
+      text-align: center;
+    }
+
+    #peer-input {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 14px;
+      font-family: 'Courier New', monospace;
+      color: var(--text);
+      width: 100%;
+      outline: none;
+    }
+
+    #peer-input:focus { border-color: var(--primary); }
+    #peer-input::placeholder { color: #475569; }
+
+    #connect-btn {
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+      transition: background 0.2s;
+    }
+
+    #connect-btn:hover:not(:disabled) { background: #16a34a; }
+    #connect-btn:disabled { background: #374151; color: #6b7280; cursor: not-allowed; }
+
+    #connect-hint {
+      font-size: 12px;
+      color: #475569;
+      text-align: center;
+    }
+
+    /* ── 影片播放器 ── */
+    #player-wrapper {
+      width: 100%;
+      max-width: 960px;
+      display: none;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    #video-container {
+      position: relative;
+      background: #000;
+      border-radius: 12px;
+      overflow: hidden;
+      aspect-ratio: 16/9;
+      width: 100%;
+    }
+
+    #remote-video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+
+    /* 狀態疊層（連線中）*/
+    #video-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      background: rgba(0,0,0,0.85);
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    #video-overlay.hidden { display: none; }
+
+    .spinner {
+      width: 28px;
+      height: 28px;
+      border: 3px solid #475569;
+      border-top-color: var(--primary);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* 資訊列 */
+    #info-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    #cam-label {
+      font-size: 13px;
+      color: var(--text-muted);
+      font-family: monospace;
+    }
+
+    #conn-info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    #conn-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--primary);
+    }
+
+    #conn-dot.relay { background: var(--yellow); }
+
+    #fullscreen-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 14px;
+      font-size: 12px;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: color 0.2s, border-color 0.2s;
+    }
+
+    #fullscreen-btn:hover { color: var(--text); border-color: #64748b; }
+
+    /* 錯誤訊息 */
+    #error-msg {
+      display: none;
+      background: rgba(239,68,68,0.1);
+      border: 1px solid rgba(239,68,68,0.3);
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 13px;
+      color: #fca5a5;
+      width: 100%;
+      max-width: 420px;
+      text-align: center;
+    }
+
+    /* 全螢幕 */
+    #video-container:fullscreen,
+    #video-container:-webkit-full-screen {
+      aspect-ratio: unset;
+      height: 100vh;
+      max-height: 100vh;
+    }
+
+    /* RWD */
+    @media (max-width: 480px) {
+      header { padding: 10px 12px; }
+      #connect-form { padding: 16px; }
+      main { padding: 12px; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>USB Camera Viewer</h1>
+  <div id="status-chip">
+    <div id="status-dot"></div>
+    <span id="status-text">未連線</span>
+  </div>
+</header>
+
+<main>
+  <!-- 輸入表單（未連線時顯示）-->
+  <div id="connect-form">
+    <h2>輸入 Peer ID 連接攝影機</h2>
+    <input
+      id="peer-input"
+      type="text"
+      placeholder="cam-usb-your-camera-name"
+      autocomplete="off"
+      autocapitalize="none"
+      spellcheck="false"
+    />
+    <button id="connect-btn">連接</button>
+    <p id="connect-hint">Peer ID 顯示於主機的攝影機卡片下方</p>
+  </div>
+
+  <!-- 播放器（連線成功後顯示）-->
+  <div id="player-wrapper">
+    <div id="video-container">
+      <video id="remote-video" autoplay playsinline></video>
+      <div id="video-overlay">
+        <div class="spinner"></div>
+        <span id="overlay-text">等待影像串流…</span>
+      </div>
+    </div>
+
+    <div id="info-bar">
+      <span id="cam-label"></span>
+      <div id="conn-info">
+        <div id="conn-dot"></div>
+        <span id="conn-type-text">偵測連線類型…</span>
+        <span id="latency-text"></span>
+      </div>
+      <button id="fullscreen-btn">全螢幕</button>
+    </div>
+  </div>
+
+  <!-- 錯誤訊息 -->
+  <div id="error-msg"></div>
+</main>
+
+<script>
+(function () {
+  // ── DOM refs ──
+  const peerInput    = document.getElementById('peer-input');
+  const connectBtn   = document.getElementById('connect-btn');
+  const connectForm  = document.getElementById('connect-form');
+  const playerWrapper = document.getElementById('player-wrapper');
+  const remoteVideo  = document.getElementById('remote-video');
+  const videoOverlay = document.getElementById('video-overlay');
+  const overlayText  = document.getElementById('overlay-text');
+  const statusDot    = document.getElementById('status-dot');
+  const statusText   = document.getElementById('status-text');
+  const camLabel     = document.getElementById('cam-label');
+  const connDot      = document.getElementById('conn-dot');
+  const connTypeText = document.getElementById('conn-type-text');
+  const latencyText  = document.getElementById('latency-text');
+  const fullscreenBtn = document.getElementById('fullscreen-btn');
+  const videoContainer = document.getElementById('video-container');
+  const errorMsg     = document.getElementById('error-msg');
+
+  let peer = null;
+  let currentCall = null;
+  let statsTimer = null;
+
+  // ── URL 參數自動帶入 Peer ID ──
+  const urlParams = new URLSearchParams(location.search);
+  const idFromUrl = urlParams.get('id') || urlParams.get('peer');
+  if (idFromUrl) {
+    peerInput.value = idFromUrl;
+    // 自動連接（延遲讓 PeerJS 載入）
+    setTimeout(() => startConnect(idFromUrl), 300);
+  }
+
+  // ── 狀態更新 helpers ──
+  function setStatus(dotClass, text) {
+    statusDot.className = dotClass;
+    statusText.textContent = text;
+  }
+
+  function showError(msg) {
+    errorMsg.style.display = 'block';
+    errorMsg.textContent = msg;
+    setStatus('error', '連線失敗');
+  }
+
+  function hideError() {
+    errorMsg.style.display = 'none';
+  }
+
+  function showForm() {
+    connectForm.style.display = 'flex';
+    playerWrapper.style.display = 'none';
+  }
+
+  function showPlayer(targetPeerId) {
+    connectForm.style.display = 'none';
+    playerWrapper.style.display = 'flex';
+    camLabel.textContent = targetPeerId;
+    videoOverlay.classList.remove('hidden');
+    overlayText.textContent = '等待影像串流…';
+  }
+
+  // ── 連線品質輪詢 ──
+  async function pollStats(peerConn) {
+    if (!peerConn) return;
+    try {
+      const stats = await peerConn.getStats();
+      for (const report of stats.values()) {
+        if (report.type === 'candidate-pair' && report.state === 'succeeded' && report.nominated) {
+          const localCand = stats.get(report.localCandidateId);
+          const isRelay = localCand?.candidateType === 'relay';
+          const rtt = report.currentRoundTripTime;
+
+          connDot.className = isRelay ? 'relay' : '';
+          connTypeText.textContent = isRelay ? 'TURN 中繼' : '直連（P2P）';
+          if (rtt != null) {
+            latencyText.textContent = Math.round(rtt * 1000) + ' ms';
+          }
+          return;
+        }
+      }
+    } catch (_) {}
+    connTypeText.textContent = '偵測中…';
+    latencyText.textContent = '';
+  }
+
+  function startStatsPolling(peerConn) {
+    stopStatsPolling();
+    const tick = () => {
+      pollStats(peerConn).then(() => {
+        if (currentCall) statsTimer = setTimeout(tick, 2000);
+      });
+    };
+    tick();
+  }
+
+  function stopStatsPolling() {
+    if (statsTimer) { clearTimeout(statsTimer); statsTimer = null; }
+  }
+
+  // ── 主連線邏輯 ──
+  function startConnect(targetPeerId) {
+    hideError();
+    if (!targetPeerId) { showError('請輸入 Peer ID'); return; }
+
+    // 先清理舊連線
+    cleanup();
+
+    setStatus('connecting', '連線中…');
+    showPlayer(targetPeerId);
+    connectBtn.disabled = true;
+
+    // 建立本端 Peer（使用隨機 ID，不需要固定）
+    peer = new Peer({
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'turn:openrelay.metered.ca:80',  username: 'openrelayproject', credential: 'openrelayproject' },
+          { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+        ]
+      }
+    });
+
+    peer.on('open', () => {
+      // 呼叫主機端 Peer
+      const call = peer.call(targetPeerId, createDummyStream());
+      currentCall = call;
+
+      call.on('stream', (remoteStream) => {
+        remoteVideo.srcObject = remoteStream;
+        remoteVideo.play().catch(() => {});
+        videoOverlay.classList.add('hidden');
+        setStatus('connected', '已連線');
+        startStatsPolling(call.peerConnection);
+      });
+
+      call.on('close', () => {
+        setStatus('', '連線已中斷');
+        overlayText.textContent = '連線已中斷，請重新連接';
+        videoOverlay.classList.remove('hidden');
+        stopStatsPolling();
+        currentCall = null;
+        connectBtn.disabled = false;
+        showForm();
+      });
+
+      call.on('error', (err) => {
+        console.error('[viewer] call error:', err);
+        showError('串流錯誤：' + (err.message || err.type || '未知錯誤'));
+        cleanup();
+        showForm();
+        connectBtn.disabled = false;
+      });
+    });
+
+    peer.on('error', (err) => {
+      console.error('[viewer] peer error:', err.type, err.message);
+      const msg = err.type === 'peer-unavailable'
+        ? `找不到 Peer「${targetPeerId}」，請確認主機已啟動且攝影機已開啟。`
+        : `連線錯誤（${err.type}）：${err.message}`;
+      showError(msg);
+      cleanup();
+      showForm();
+      connectBtn.disabled = false;
+    });
+  }
+
+  // Viewer 端只是觀看，不需要傳送任何串流；
+  // 但 PeerJS media call 需要本端也提供一個含 video track 的 MediaStream，
+  // 否則 SDP offer 不含 m=video，host 端無法回傳影像。
+  function createDummyStream() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1; canvas.height = 1;
+    return canvas.captureStream(1);
+  }
+
+  function cleanup() {
+    stopStatsPolling();
+    try { currentCall?.close(); } catch (_) {}
+    try { peer?.destroy(); } catch (_) {}
+    currentCall = null;
+    peer = null;
+    remoteVideo.srcObject = null;
+    connTypeText.textContent = '偵測連線類型…';
+    latencyText.textContent = '';
+    connDot.className = '';
+  }
+
+  // ── 事件綁定 ──
+  connectBtn.addEventListener('click', () => {
+    startConnect(peerInput.value.trim());
+  });
+
+  peerInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') startConnect(peerInput.value.trim());
+  });
+
+  fullscreenBtn.addEventListener('click', () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      videoContainer.requestFullscreen().catch(() => {});
+    }
+  });
+
+  document.addEventListener('fullscreenchange', () => {
+    fullscreenBtn.textContent = document.fullscreenElement ? '退出全螢幕' : '全螢幕';
+  });
+
+  // ── 頁面離開時清理 ──
+  window.addEventListener('beforeunload', cleanup);
+})();
+</script>
+</body>
+</html>
