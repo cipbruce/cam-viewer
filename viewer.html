@@ -184,6 +184,20 @@
 
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    #cancel-reconnect-btn {
+      display: none;
+      margin-top: 4px;
+      background: transparent;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      padding: 5px 16px;
+      font-size: 12px;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: border-color 0.2s, color 0.2s;
+    }
+    #cancel-reconnect-btn:hover { border-color: #94a3b8; color: var(--text); }
+
     /* 資訊列 */
     #info-bar {
       display: flex;
@@ -292,6 +306,7 @@
       <div id="video-overlay">
         <div class="spinner"></div>
         <span id="overlay-text">等待影像串流…</span>
+        <button id="cancel-reconnect-btn">取消重連</button>
       </div>
     </div>
 
@@ -329,10 +344,15 @@
   const fullscreenBtn = document.getElementById('fullscreen-btn');
   const videoContainer = document.getElementById('video-container');
   const errorMsg     = document.getElementById('error-msg');
+  const cancelReconnectBtn = document.getElementById('cancel-reconnect-btn');
 
   let peer = null;
   let currentCall = null;
   let statsTimer = null;
+  let currentTargetPeerId = null;
+  let reconnectCount = 0;
+  let reconnectTimer = null;
+  let countdownTimer = null;
 
   // ── URL 參數自動帶入 Peer ID ──
   const urlParams = new URLSearchParams(location.search);
@@ -410,10 +430,54 @@
     if (statsTimer) { clearTimeout(statsTimer); statsTimer = null; }
   }
 
+  // ── 自動重連 ──
+  function scheduleReconnect() {
+    if (!currentTargetPeerId) { showForm(); return; }
+    const base = Math.min(3000 * Math.pow(2, reconnectCount), 30000);
+    const delay = Math.round(base + Math.random() * 1000);
+    const delaySec = Math.round(delay / 1000);
+    reconnectCount++;
+
+    videoOverlay.classList.remove('hidden');
+    cancelReconnectBtn.style.display = 'block';
+    setStatus('connecting', `${delaySec}s 後重連`);
+
+    let remaining = delaySec;
+    function tick() { overlayText.textContent = `${remaining} 秒後自動重連… (第 ${reconnectCount} 次)`; }
+    tick();
+    countdownTimer = setInterval(() => {
+      remaining--;
+      if (remaining <= 0) { clearInterval(countdownTimer); countdownTimer = null; }
+      else tick();
+    }, 1000);
+
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      cancelReconnectBtn.style.display = 'none';
+      startConnect(currentTargetPeerId);
+    }, delay);
+  }
+
+  function cancelReconnect() {
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+    reconnectCount = 0;
+    cancelReconnectBtn.style.display = 'none';
+    showForm();
+    setStatus('', '未連線');
+    connectBtn.disabled = false;
+  }
+
   // ── 主連線邏輯 ──
   function startConnect(targetPeerId) {
     hideError();
     if (!targetPeerId) { showError('請輸入 Peer ID'); return; }
+
+    // 取消任何待執行的重連計時器
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+    cancelReconnectBtn.style.display = 'none';
+    currentTargetPeerId = targetPeerId;
 
     // 先清理舊連線
     cleanup();
@@ -432,11 +496,9 @@
           { urls: 'stun:stun2.l.google.com:19302' },
           { urls: 'stun:stun3.l.google.com:19302' },
           { urls: 'stun:stun.cloudflare.com:3478' },
-          // TURN fallback：UDP + TCP（TCP 可穿透封鎖 UDP 的防火牆）
-          { urls: 'turn:openrelay.metered.ca:80',                username: 'openrelayproject', credential: 'openrelayproject' },
-          { urls: 'turn:openrelay.metered.ca:443',               username: 'openrelayproject', credential: 'openrelayproject' },
-          { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-          { urls: 'turn:openrelay.metered.ca:80?transport=tcp',  username: 'openrelayproject', credential: 'openrelayproject' },
+          // 自建 coturn（主力 TURN）
+          { urls: 'turn:122.116.22.14:3478',               username: 'user1', credential: '123Qweasd' },
+          { urls: 'turn:122.116.22.14:3478?transport=tcp', username: 'user1', credential: '123Qweasd' },
         ]
       }
     });
@@ -447,6 +509,7 @@
       currentCall = call;
 
       call.on('stream', (remoteStream) => {
+        reconnectCount = 0;
         remoteVideo.srcObject = remoteStream;
         setStatus('connected', '已連線');
         startStatsPolling(call.peerConnection);
@@ -459,13 +522,10 @@
       });
 
       call.on('close', () => {
-        setStatus('', '連線已中斷');
-        overlayText.textContent = '連線已中斷，請重新連接';
-        videoOverlay.classList.remove('hidden');
         stopStatsPolling();
         currentCall = null;
         connectBtn.disabled = false;
-        showForm();
+        scheduleReconnect();
       });
 
       call.on('error', (err) => {
@@ -479,13 +539,14 @@
 
     peer.on('error', (err) => {
       console.error('[viewer] peer error:', err.type, err.message);
-      const msg = err.type === 'peer-unavailable'
-        ? `找不到 Peer「${targetPeerId}」，請確認主機已啟動且攝影機已開啟。`
-        : `連線錯誤（${err.type}）：${err.message}`;
-      showError(msg);
       cleanup();
-      showForm();
-      connectBtn.disabled = false;
+      if (err.type === 'peer-unavailable') {
+        scheduleReconnect();
+      } else {
+        showError(`連線錯誤（${err.type}）：${err.message}`);
+        showForm();
+        connectBtn.disabled = false;
+      }
     });
   }
 
@@ -518,6 +579,8 @@
         .catch(() => {});
     }
   });
+
+  cancelReconnectBtn.addEventListener('click', cancelReconnect);
 
   connectBtn.addEventListener('click', () => {
     startConnect(peerInput.value.trim());
