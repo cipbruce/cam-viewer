@@ -353,6 +353,7 @@
   let reconnectCount = 0;
   let reconnectTimer = null;
   let countdownTimer = null;
+  let iceDisconnectTimer = null;
 
   // ── URL 參數自動帶入 Peer ID ──
   const urlParams = new URLSearchParams(location.search);
@@ -530,6 +531,27 @@
             // 行動瀏覽器 autoplay 被封鎖，等待使用者手勢
             overlayText.textContent = '點擊畫面開始播放';
           });
+
+        // Stream 播放中途若 ICE 斷線，call.on('close') 訊號可能送不到 viewer。
+        // 直接在 viewer 端監聽 ICE 狀態：斷線 15s 後主動觸發重連。
+        const peerConn = call.peerConnection;
+        peerConn.addEventListener('iceconnectionstatechange', () => {
+          const s = peerConn.iceConnectionState;
+          if (s === 'disconnected' || s === 'failed') {
+            if (!iceDisconnectTimer) {
+              iceDisconnectTimer = setTimeout(() => {
+                iceDisconnectTimer = null;
+                if (currentCall === call) {
+                  console.warn('[viewer] ICE disconnect timeout, reconnecting…');
+                  cleanup();
+                  scheduleReconnect();
+                }
+              }, 15000);
+            }
+          } else if (s === 'connected' || s === 'completed') {
+            if (iceDisconnectTimer) { clearTimeout(iceDisconnectTimer); iceDisconnectTimer = null; }
+          }
+        });
       });
 
       call.on('close', () => {
@@ -573,6 +595,7 @@
   }
 
   function cleanup() {
+    if (iceDisconnectTimer) { clearTimeout(iceDisconnectTimer); iceDisconnectTimer = null; }
     stopStatsPolling();
     try { currentCall?.close(); } catch (_) {}
     try { peer?.destroy(); } catch (_) {}
