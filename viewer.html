@@ -508,7 +508,18 @@
       const call = peer.call(targetPeerId, createDummyStream());
       currentCall = call;
 
+      // ICE 可能靜默失敗（host 無網路時 close 訊號送不到 viewer）
+      // 若 15s 內未收到 stream，視為失敗並重連
+      const streamArrivalTimer = setTimeout(() => {
+        if (currentCall === call) {
+          console.warn('[viewer] stream arrival timeout, reconnecting…');
+          cleanup();
+          scheduleReconnect();
+        }
+      }, 15000);
+
       call.on('stream', (remoteStream) => {
+        clearTimeout(streamArrivalTimer);
         reconnectCount = 0;
         remoteVideo.srcObject = remoteStream;
         setStatus('connected', '已連線');
@@ -522,6 +533,7 @@
       });
 
       call.on('close', () => {
+        clearTimeout(streamArrivalTimer);
         stopStatsPolling();
         currentCall = null;
         connectBtn.disabled = false;
@@ -529,6 +541,7 @@
       });
 
       call.on('error', (err) => {
+        clearTimeout(streamArrivalTimer);
         console.error('[viewer] call error:', err);
         showError('串流錯誤：' + (err.message || err.type || '未知錯誤'));
         cleanup();
@@ -540,7 +553,7 @@
     peer.on('error', (err) => {
       console.error('[viewer] peer error:', err.type, err.message);
       cleanup();
-      if (err.type === 'peer-unavailable') {
+      if (err.type === 'peer-unavailable' || err.type === 'network') {
         scheduleReconnect();
       } else {
         showError(`連線錯誤（${err.type}）：${err.message}`);
