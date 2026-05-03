@@ -230,7 +230,7 @@
 
     #conn-dot.relay { background: var(--yellow); }
 
-    #fullscreen-btn {
+    #fullscreen-btn, #audio-btn {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -241,7 +241,10 @@
       transition: color 0.2s, border-color 0.2s;
     }
 
-    #fullscreen-btn:hover { color: var(--text); border-color: #64748b; }
+    #fullscreen-btn:hover, #audio-btn:hover { color: var(--text); border-color: #64748b; }
+
+    #audio-btn { display: none; }
+    #audio-btn.has-audio { display: inline-block; }
 
     /* 錯誤訊息 */
     #error-msg {
@@ -302,7 +305,7 @@
   <!-- 播放器（連線成功後顯示）-->
   <div id="player-wrapper">
     <div id="video-container">
-      <video id="remote-video" autoplay playsinline></video>
+      <video id="remote-video" autoplay playsinline muted></video>
       <div id="video-overlay">
         <div class="spinner"></div>
         <span id="overlay-text">等待影像串流…</span>
@@ -317,6 +320,7 @@
         <span id="conn-type-text">偵測連線類型…</span>
         <span id="latency-text"></span>
       </div>
+      <button id="audio-btn" title="音訊控制"></button>
       <button id="fullscreen-btn">全螢幕</button>
     </div>
   </div>
@@ -342,6 +346,7 @@
   const connTypeText = document.getElementById('conn-type-text');
   const latencyText  = document.getElementById('latency-text');
   const fullscreenBtn = document.getElementById('fullscreen-btn');
+  const audioBtn     = document.getElementById('audio-btn');
   const videoContainer = document.getElementById('video-container');
   const errorMsg     = document.getElementById('error-msg');
   const cancelReconnectBtn = document.getElementById('cancel-reconnect-btn');
@@ -525,6 +530,11 @@
         remoteVideo.srcObject = remoteStream;
         setStatus('connected', '已連線');
         startStatsPolling(call.peerConnection);
+        // 若串流含音軌，顯示靜音/取消靜音按鈕（video 預設 muted，符合 autoplay 政策）
+        if (remoteStream.getAudioTracks().length > 0) {
+          audioBtn.classList.add('has-audio');
+          updateAudioBtn();
+        }
         remoteVideo.play()
           .then(() => { videoOverlay.classList.add('hidden'); })
           .catch(() => {
@@ -586,12 +596,24 @@
   }
 
   // Viewer 端只是觀看，不需要傳送任何串流；
-  // 但 PeerJS media call 需要本端也提供一個含 video track 的 MediaStream，
-  // 否則 SDP offer 不含 m=video，host 端無法回傳影像。
+  // 但 PeerJS media call 需要本端也提供含 video + audio track 的 MediaStream，
+  // 否則 SDP offer 不含對應的 m= 行，host 端無法回傳影像或音訊。
   function createDummyStream() {
     const canvas = document.createElement('canvas');
     canvas.width = 1; canvas.height = 1;
-    return canvas.captureStream(1);
+    const videoTrack = canvas.captureStream(1).getVideoTracks()[0];
+    const tracks = [videoTrack];
+    // 加入空白音軌讓 SDP offer 包含 m=audio，host 端才能傳送麥克風音訊
+    try {
+      const actx = new AudioContext();
+      const dest = actx.createMediaStreamDestination();
+      tracks.push(dest.stream.getAudioTracks()[0]);
+    } catch (_) {}
+    return new MediaStream(tracks);
+  }
+
+  function updateAudioBtn() {
+    audioBtn.textContent = remoteVideo.muted ? '🔇 取消靜音' : '🔊 靜音';
   }
 
   function cleanup() {
@@ -602,6 +624,8 @@
     currentCall = null;
     peer = null;
     remoteVideo.srcObject = null;
+    remoteVideo.muted = true;
+    audioBtn.classList.remove('has-audio');
     connTypeText.textContent = '偵測連線類型…';
     latencyText.textContent = '';
     connDot.className = '';
@@ -624,6 +648,11 @@
 
   peerInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') startConnect(peerInput.value.trim());
+  });
+
+  audioBtn.addEventListener('click', () => {
+    remoteVideo.muted = !remoteVideo.muted;
+    updateAudioBtn();
   });
 
   fullscreenBtn.addEventListener('click', () => {
