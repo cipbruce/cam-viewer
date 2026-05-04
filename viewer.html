@@ -184,6 +184,20 @@
 
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    #cancel-reconnect-btn {
+      display: none;
+      margin-top: 4px;
+      background: transparent;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      padding: 5px 16px;
+      font-size: 12px;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: border-color 0.2s, color 0.2s;
+    }
+    #cancel-reconnect-btn:hover { border-color: #94a3b8; color: var(--text); }
+
     /* 資訊列 */
     #info-bar {
       display: flex;
@@ -216,7 +230,7 @@
 
     #conn-dot.relay { background: var(--yellow); }
 
-    #fullscreen-btn {
+    #fullscreen-btn, #audio-btn {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -227,7 +241,10 @@
       transition: color 0.2s, border-color 0.2s;
     }
 
-    #fullscreen-btn:hover { color: var(--text); border-color: #64748b; }
+    #fullscreen-btn:hover, #audio-btn:hover { color: var(--text); border-color: #64748b; }
+
+    #audio-btn { display: none; }
+    #audio-btn.has-audio { display: inline-block; }
 
     /* 錯誤訊息 */
     #error-msg {
@@ -288,10 +305,11 @@
   <!-- 播放器（連線成功後顯示）-->
   <div id="player-wrapper">
     <div id="video-container">
-      <video id="remote-video" autoplay playsinline></video>
+      <video id="remote-video" autoplay playsinline muted></video>
       <div id="video-overlay">
         <div class="spinner"></div>
         <span id="overlay-text">等待影像串流…</span>
+        <button id="cancel-reconnect-btn">取消重連</button>
       </div>
     </div>
 
@@ -302,6 +320,7 @@
         <span id="conn-type-text">偵測連線類型…</span>
         <span id="latency-text"></span>
       </div>
+      <button id="audio-btn" title="音訊控制"></button>
       <button id="fullscreen-btn">全螢幕</button>
     </div>
   </div>
@@ -327,12 +346,19 @@
   const connTypeText = document.getElementById('conn-type-text');
   const latencyText  = document.getElementById('latency-text');
   const fullscreenBtn = document.getElementById('fullscreen-btn');
+  const audioBtn     = document.getElementById('audio-btn');
   const videoContainer = document.getElementById('video-container');
   const errorMsg     = document.getElementById('error-msg');
+  const cancelReconnectBtn = document.getElementById('cancel-reconnect-btn');
 
   let peer = null;
   let currentCall = null;
   let statsTimer = null;
+  let currentTargetPeerId = null;
+  let reconnectCount = 0;
+  let reconnectTimer = null;
+  let countdownTimer = null;
+  let iceDisconnectTimer = null;
 
   // ── URL 參數自動帶入 Peer ID ──
   const urlParams = new URLSearchParams(location.search);
@@ -410,10 +436,54 @@
     if (statsTimer) { clearTimeout(statsTimer); statsTimer = null; }
   }
 
+  // ── 自動重連 ──
+  function scheduleReconnect() {
+    if (!currentTargetPeerId) { showForm(); return; }
+    const base = Math.min(3000 * Math.pow(2, reconnectCount), 30000);
+    const delay = Math.round(base + Math.random() * 1000);
+    const delaySec = Math.round(delay / 1000);
+    reconnectCount++;
+
+    videoOverlay.classList.remove('hidden');
+    cancelReconnectBtn.style.display = 'block';
+    setStatus('connecting', `${delaySec}s 後重連`);
+
+    let remaining = delaySec;
+    function tick() { overlayText.textContent = `${remaining} 秒後自動重連… (第 ${reconnectCount} 次)`; }
+    tick();
+    countdownTimer = setInterval(() => {
+      remaining--;
+      if (remaining <= 0) { clearInterval(countdownTimer); countdownTimer = null; }
+      else tick();
+    }, 1000);
+
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      cancelReconnectBtn.style.display = 'none';
+      startConnect(currentTargetPeerId);
+    }, delay);
+  }
+
+  function cancelReconnect() {
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+    reconnectCount = 0;
+    cancelReconnectBtn.style.display = 'none';
+    showForm();
+    setStatus('', '未連線');
+    connectBtn.disabled = false;
+  }
+
   // ── 主連線邏輯 ──
   function startConnect(targetPeerId) {
     hideError();
     if (!targetPeerId) { showError('請輸入 Peer ID'); return; }
+
+    // 取消任何待執行的重連計時器
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+    cancelReconnectBtn.style.display = 'none';
+    currentTargetPeerId = targetPeerId;
 
     // 先清理舊連線
     cleanup();
@@ -435,11 +505,8 @@
           // 自建 coturn（主力 TURN）
           { urls: 'turn:122.116.22.14:3478',               username: 'user1', credential: '123Qweasd' },
           { urls: 'turn:122.116.22.14:3478?transport=tcp', username: 'user1', credential: '123Qweasd' },
-          // Open Relay 免費 TURN（備援）
-          { urls: 'turn:openrelay.metered.ca:80',                username: 'openrelayproject', credential: 'openrelayproject' },
-          { urls: 'turn:openrelay.metered.ca:443',               username: 'openrelayproject', credential: 'openrelayproject' },
-          { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-          { urls: 'turn:openrelay.metered.ca:80?transport=tcp',  username: 'openrelayproject', credential: 'openrelayproject' },
+          // TURNS（TLS port 443，穿透 HTTP Proxy / 嚴格防火牆）
+          { urls: 'turns:122.116.22.14:443?transport=tcp', username: 'user1', credential: '123Qweasd' },
         ]
       }
     });
@@ -449,29 +516,66 @@
       const call = peer.call(targetPeerId, createDummyStream());
       currentCall = call;
 
+      // ICE 可能靜默失敗（host 無網路時 close 訊號送不到 viewer）
+      // 若 15s 內未收到 stream，視為失敗並重連
+      const streamArrivalTimer = setTimeout(() => {
+        if (currentCall === call) {
+          console.warn('[viewer] stream arrival timeout, reconnecting…');
+          cleanup();
+          scheduleReconnect();
+        }
+      }, 15000);
+
       call.on('stream', (remoteStream) => {
+        clearTimeout(streamArrivalTimer);
+        reconnectCount = 0;
         remoteVideo.srcObject = remoteStream;
         setStatus('connected', '已連線');
         startStatsPolling(call.peerConnection);
+        // 若串流含音軌，顯示靜音/取消靜音按鈕（video 預設 muted，符合 autoplay 政策）
+        if (remoteStream.getAudioTracks().length > 0) {
+          audioBtn.classList.add('has-audio');
+          updateAudioBtn();
+        }
         remoteVideo.play()
           .then(() => { videoOverlay.classList.add('hidden'); })
           .catch(() => {
             // 行動瀏覽器 autoplay 被封鎖，等待使用者手勢
             overlayText.textContent = '點擊畫面開始播放';
           });
+
+        // Stream 播放中途若 ICE 斷線，call.on('close') 訊號可能送不到 viewer。
+        // 直接在 viewer 端監聽 ICE 狀態：斷線 15s 後主動觸發重連。
+        const peerConn = call.peerConnection;
+        peerConn.addEventListener('iceconnectionstatechange', () => {
+          const s = peerConn.iceConnectionState;
+          if (s === 'disconnected' || s === 'failed') {
+            if (!iceDisconnectTimer) {
+              iceDisconnectTimer = setTimeout(() => {
+                iceDisconnectTimer = null;
+                if (currentCall === call) {
+                  console.warn('[viewer] ICE disconnect timeout, reconnecting…');
+                  cleanup();
+                  scheduleReconnect();
+                }
+              }, 15000);
+            }
+          } else if (s === 'connected' || s === 'completed') {
+            if (iceDisconnectTimer) { clearTimeout(iceDisconnectTimer); iceDisconnectTimer = null; }
+          }
+        });
       });
 
       call.on('close', () => {
-        setStatus('', '連線已中斷');
-        overlayText.textContent = '連線已中斷，請重新連接';
-        videoOverlay.classList.remove('hidden');
+        clearTimeout(streamArrivalTimer);
         stopStatsPolling();
         currentCall = null;
         connectBtn.disabled = false;
-        showForm();
+        scheduleReconnect();
       });
 
       call.on('error', (err) => {
+        clearTimeout(streamArrivalTimer);
         console.error('[viewer] call error:', err);
         showError('串流錯誤：' + (err.message || err.type || '未知錯誤'));
         cleanup();
@@ -482,32 +586,48 @@
 
     peer.on('error', (err) => {
       console.error('[viewer] peer error:', err.type, err.message);
-      const msg = err.type === 'peer-unavailable'
-        ? `找不到 Peer「${targetPeerId}」，請確認主機已啟動且攝影機已開啟。`
-        : `連線錯誤（${err.type}）：${err.message}`;
-      showError(msg);
       cleanup();
-      showForm();
-      connectBtn.disabled = false;
+      if (err.type === 'peer-unavailable' || err.type === 'network') {
+        scheduleReconnect();
+      } else {
+        showError(`連線錯誤（${err.type}）：${err.message}`);
+        showForm();
+        connectBtn.disabled = false;
+      }
     });
   }
 
   // Viewer 端只是觀看，不需要傳送任何串流；
-  // 但 PeerJS media call 需要本端也提供一個含 video track 的 MediaStream，
-  // 否則 SDP offer 不含 m=video，host 端無法回傳影像。
+  // 但 PeerJS media call 需要本端也提供含 video + audio track 的 MediaStream，
+  // 否則 SDP offer 不含對應的 m= 行，host 端無法回傳影像或音訊。
   function createDummyStream() {
     const canvas = document.createElement('canvas');
     canvas.width = 1; canvas.height = 1;
-    return canvas.captureStream(1);
+    const videoTrack = canvas.captureStream(1).getVideoTracks()[0];
+    const tracks = [videoTrack];
+    // 加入空白音軌讓 SDP offer 包含 m=audio，host 端才能傳送麥克風音訊
+    try {
+      const actx = new AudioContext();
+      const dest = actx.createMediaStreamDestination();
+      tracks.push(dest.stream.getAudioTracks()[0]);
+    } catch (_) {}
+    return new MediaStream(tracks);
+  }
+
+  function updateAudioBtn() {
+    audioBtn.textContent = remoteVideo.muted ? '🔇 取消靜音' : '🔊 靜音';
   }
 
   function cleanup() {
+    if (iceDisconnectTimer) { clearTimeout(iceDisconnectTimer); iceDisconnectTimer = null; }
     stopStatsPolling();
     try { currentCall?.close(); } catch (_) {}
     try { peer?.destroy(); } catch (_) {}
     currentCall = null;
     peer = null;
     remoteVideo.srcObject = null;
+    remoteVideo.muted = true;
+    audioBtn.classList.remove('has-audio');
     connTypeText.textContent = '偵測連線類型…';
     latencyText.textContent = '';
     connDot.className = '';
@@ -522,12 +642,19 @@
     }
   });
 
+  cancelReconnectBtn.addEventListener('click', cancelReconnect);
+
   connectBtn.addEventListener('click', () => {
     startConnect(peerInput.value.trim());
   });
 
   peerInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') startConnect(peerInput.value.trim());
+  });
+
+  audioBtn.addEventListener('click', () => {
+    remoteVideo.muted = !remoteVideo.muted;
+    updateAudioBtn();
   });
 
   fullscreenBtn.addEventListener('click', () => {
