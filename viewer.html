@@ -502,11 +502,12 @@
           { urls: 'stun:stun2.l.google.com:19302' },
           { urls: 'stun:stun3.l.google.com:19302' },
           { urls: 'stun:stun.cloudflare.com:3478' },
-          // 自建 coturn（主力 TURN）
-          { urls: 'turn:122.116.22.14:3478',               username: 'user1', credential: '123Qweasd' },
-          { urls: 'turn:122.116.22.14:3478?transport=tcp', username: 'user1', credential: '123Qweasd' },
+          // 自建 coturn（主力 STUN + TURN）
+          { urls: 'stun:cam-ip.duckdns.org:3478' },
+          { urls: 'turn:cam-ip.duckdns.org:3478',               username: 'user1', credential: '123Qweasd' },
+          { urls: 'turn:cam-ip.duckdns.org:3478?transport=tcp', username: 'user1', credential: '123Qweasd' },
           // TURNS（TLS port 443，穿透 HTTP Proxy / 嚴格防火牆）
-          { urls: 'turns:122.116.22.14:443?transport=tcp', username: 'user1', credential: '123Qweasd' },
+          { urls: 'turns:cam-ip.duckdns.org:443?transport=tcp', username: 'user1', credential: '123Qweasd' },
         ]
       }
     });
